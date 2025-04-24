@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.db.models import Q
 from .models import UserModule, Module
 from requests.exceptions import RequestException
+from search.constants   import FEED_PATHS
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -299,71 +300,6 @@ class IBMXForceQuery:
         else:
             return "unknown"
 
-class CiscoTalosQuery:
-    def __init__(self, user, module_name="Cisco Talos"):
-        self.api_key = get_api_key(user, module_name)
-        self.base_url = "https://api.talosintelligence.com"
-
-    def query_ip(self, ip_address):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/ip_reputation/{ip_address}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from Cisco Talos"}
-
-    def query_domain(self, domain):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/domain_reputation/{domain}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from Cisco Talos"}
-
-    def query_url(self, url):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/url_reputation/{url}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from Cisco Talos"}
-
-    def query(self, indicator):
-        indicator_type = self.determine_indicator_type(indicator)
-        if indicator_type == "ip":
-            return self.query_ip(indicator)
-        elif indicator_type == "domain":
-            return self.query_domain(indicator)
-        elif indicator_type == "url":
-            return self.query_url(indicator)
-        else:
-            return {"error": "Unsupported indicator type"}
-
-    def determine_indicator_type(self, indicator):
-        if indicator.startswith("http://") or indicator.startswith("https://"):
-            return "url"
-        elif "." in indicator:
-            return "domain"
-        elif indicator.count(".") == 3:
-            return "ip"
-        else:
-            return "unknown"
-
 class ShodanQuery:
     def __init__(self, user, module_name="Shodan"):
         self.api_key = get_api_key(user, module_name)
@@ -394,37 +330,232 @@ class ShodanQuery:
         else:
             return "unknown"
 
-class CensysQuery:
-    def __init__(self, user, module_name="Censys"):
-        self.api_id = get_api_key(user, f"{module_name}_ID")
-        self.api_secret = get_api_key(user, f"{module_name}_SECRET")
-        self.base_url = "https://censys.io/api/v1"
+class APIVoidQuery:
+    def __init__(self, user):
+        self.base_url = "https://endpoint.apivoid.com"
+        self.user = user
+        self.module_name = "APIVoid"
+
+    def _get_api_key(self):
+        return get_api_key(self.user, self.module_name)
 
     def query_ip(self, ip_address):
-        if not self.api_id or not self.api_secret:
-            return {"error": "API keys not available"}
-        
-        url = f"{self.base_url}/view/ipv4/{ip_address}"
-        auth = (self.api_id, self.api_secret)
-        response = requests.get(url, auth=auth)
+        api_key = self._get_api_key()
+        if api_key:
+            url = f"{self.base_url}/iprep/{ip_address}"
+            params = {"key": api_key}
+            return api_call_with_cache(url, params, f"apivoid_ip_{ip_address}")
+        return {"error": "API key not found or not enabled"}
 
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from Censys"}
+    def query_url(self, url):
+        api_key = self._get_api_key()
+        if api_key:
+            url = f"{self.base_url}/urlrep/{url}"
+            params = {"key": api_key}
+            return api_call_with_cache(url, params, f"apivoid_url_{url}")
+        return {"error": "API key not found or not enabled"}
+
+    def query_domain(self, domain):
+        api_key = self._get_api_key()
+        if api_key:
+            url = f"{self.base_url}/domainrep/{domain}"
+            params = {"key": api_key}
+            return api_call_with_cache(url, params, f"apivoid_domain_{domain}")
+        return {"error": "API key not found or not enabled"}
+
+    def query_file(self, file_hash):
+        api_key = self._get_api_key()
+        if api_key:
+            url = f"{self.base_url}/filerep/{file_hash}"
+            params = {"key": api_key}
+            return api_call_with_cache(url, params, f"apivoid_file_{file_hash}")
+        return {"error": "API key not found or not enabled"}
 
     def query(self, indicator):
         indicator_type = self.determine_indicator_type(indicator)
         if indicator_type == "ip":
             return self.query_ip(indicator)
+        elif indicator_type == "url":
+            return self.query_url(indicator)
+        elif indicator_type == "domain":
+            return self.query_domain(indicator)
+        elif indicator_type == "file":
+            return self.query_file(indicator)
         else:
-            return {"error": "Censys only supports IP queries"}
+            return {"error": "Unsupported indicator type"}
 
     def determine_indicator_type(self, indicator):
-        if indicator.count(".") == 3:  # Basic check for an IP address
-            return "ip"
+        if len(indicator) == 32 or len(indicator) == 40 or len(indicator) == 64:
+            return "file"  # File hash
+        elif indicator.startswith("http://") or indicator.startswith("https://"):
+            return "url"  # URL
+        elif "." in indicator:
+            return "domain"  # Domain
+        elif indicator.count(".") == 3:
+            return "ip"  # IP address
         else:
             return "unknown"
+
+class ThreatFoxQuery:
+    def __init__(self, user):
+        self.base_url = "https://threatfox-api.abuse.ch/api/v1/"  # <- trailing slash is required
+        self.user = user
+        self.module_name = "ThreatFox"
+
+    def _get_api_key(self):
+        return get_api_key(self.user, self.module_name)
+
+    def query(self, indicator):
+        api_key = self._get_api_key()
+        if not api_key:
+            return {"error": "API key not found or not enabled"}
+
+        payload = {
+            "query": "search_ioc",
+            "search_term": indicator
+        }
+
+        headers = {
+            "API-KEY": api_key  # MUST be "API-KEY" (not "API-Key")
+        }
+
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers)
+            rate_limit_request()
+            return self._handle_response(response)
+        except requests.RequestException as e:
+            return {"error": f"Request error: {str(e)}"}
+
+    def _handle_response(self, response):
+        if response.status_code == 200:
+            try:
+                # Try to parse the JSON response
+                response_json = response.json()
+
+                # Debugging: Log the full response structure to inspect it
+                print("Full Response JSON:", response_json)
+
+                # Handle the case where no results are found
+                if response_json.get("query_status") == "no_result":
+                    return {"error": "No results found for the given indicator"}
+
+                # If response contains 'indicator', return it, otherwise log error
+                if isinstance(response_json, dict):
+                    if "indicator" in response_json:
+                        return response_json
+                    else:
+                        return {"error": "Expected 'indicator' field not found in response"}
+                else:
+                    return {"error": "Unexpected response format: JSON was not a dictionary"}
+            except ValueError:
+                return {"error": "Failed to parse JSON, invalid response format"}
+        else:
+            # Log status code and response text for debugging
+            return {
+                "error": f"Failed to fetch data (status code: {response.status_code})",
+                "response": response.text
+            }
+
+class MalwareBazaarQuery:
+    def __init__(self, user):
+        self.base_url = "https://mb-api.abuse.ch/api/v1/"
+        self.user = user
+        self.module_name = "MalwareBazaar"
+
+    def _get_api_key(self):
+        return get_api_key(self.user, self.module_name)
+
+    def query(self, indicator):
+        api_key = self._get_api_key()
+        if not api_key:
+            return {"error": "API key not found or not enabled"}
+
+        payload = {
+            "query": "get_info",
+            "hash": indicator
+        }
+
+        headers = {
+            "API-KEY": api_key
+        }
+
+        try:
+            response = requests.post(self.base_url, json=payload, headers=headers)
+            rate_limit_request()
+            return self._handle_response(response)
+        except requests.RequestException as e:
+            return {"error": f"Request error: {str(e)}"}
+
+    def _handle_response(self, response):
+        if response.status_code == 200:
+            try:
+                response_json = response.json()
+                print("Full Response JSON:", response_json)
+
+                if response_json.get("query_status") == "no_results":
+                    return {"error": "No results found for the given hash"}
+
+                if "data" in response_json:
+                    return response_json["data"]
+                else:
+                    return {"error": "Expected 'data' field not found in response"}
+            except ValueError:
+                return {"error": "Failed to parse JSON, invalid response format"}
+        else:
+            return {
+                "error": f"Failed to fetch data (status code: {response.status_code})",
+                "response": response.text
+            }
+
+class URLHausQuery:
+    def __init__(self, user):
+        self.base_url = "https://urlhaus-api.abuse.ch/v1/"
+        self.user = user
+        self.module_name = "URLHaus"
+
+    def _get_api_key(self):
+        return get_api_key(self.user, self.module_name)
+
+    def query(self, indicator):
+        api_key = self._get_api_key()
+        if not api_key:
+            return {"error": "API key not found or not enabled"}
+
+        payload = {
+            "url": indicator
+        }
+
+        headers = {
+            "API-KEY": api_key
+        }
+
+        try:
+            response = requests.post(self.base_url + "url/", json=payload, headers=headers)
+            rate_limit_request()
+            return self._handle_response(response)
+        except requests.RequestException as e:
+            return {"error": f"Request error: {str(e)}"}
+
+    def _handle_response(self, response):
+        if response.status_code == 200:
+            try:
+                response_json = response.json()
+                print("Full Response JSON:", response_json)
+
+                if response_json.get("query_status") == "no_results":
+                    return {"error": "No results found for the given URL"}
+
+                if "url" in response_json:
+                    return response_json
+                else:
+                    return {"error": "Expected 'url' field not found in response"}
+            except ValueError:
+                return {"error": "Failed to parse JSON, invalid response format"}
+        else:
+            return {
+                "error": f"Failed to fetch data (status code: {response.status_code})",
+                "response": response.text
+            }
 
 class AbuseIPDBQuery:
     def __init__(self, user, module_name="AbuseIPDB"):
@@ -544,42 +675,132 @@ class URLScanQuery:
         else:
             return "unknown"
 
-class PhishLabsQuery:
-    def __init__(self, user, module_name="PhishLabs"):
-        self.api_key = get_api_key(user, module_name)
-        self.base_url = "https://api.phishlabs.com/api/v1/urls/"
+class OnionooQuery:
+    def __init__(self, user, module_name="Onionoo"):
+        # No API key needed for Onionoo, but still storing module_name for consistency
+        self.base_url = "https://onionoo.torproject.org/details"
 
-    def query_url(self, url_hash):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}{url_hash}"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}"
+    def query_ip(self, ip_address):
+        params = {
+            "search": ip_address
         }
 
-        response = requests.get(url, headers=headers)
+        try:
+            response = requests.get(self.base_url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return self._parse_response(data, ip_address)
+            else:
+                return {"error": f"Failed to fetch data from Onionoo: {response.status_code}"}
+        except requests.RequestException as e:
+            return {"error": f"Request error: {str(e)}"}
 
-        if response.status_code == 200:
-            return response.json()
+    def _parse_response(self, data, ip_address):
+        relays = data.get("relays", [])
+        if not relays:
+            return {
+                "ip": ip_address,
+                "tor_exit_node": False,
+                "message": "IP address not found in Onionoo exit node data."
+            }
+
+        # You could expand this to include more metadata
+        return {
+            "ip": ip_address,
+            "tor_exit_node": True,
+            "matches": relays  # Includes full matching relay details
+        }
+
+    def query(self, indicator):
+        indicator_type = self.determine_indicator_type(indicator)
+        if indicator_type == "ip":
+            return self.query_ip(indicator)
         else:
-            return {"error": "Failed to fetch data from PhishLabs"}
+            return {"error": "Onionoo only supports IP address queries"}
+
+    def determine_indicator_type(self, indicator):
+        if indicator.count(".") == 3:
+            return "ip"
+        return "unknown"
+
+class PhishTankQuery:
+    def __init__(self, user, module_name="PhishTank"):
+        # Requires API key from user for authenticating requests
+        self.base_url = "https://check.phishtank.com/checkphoenix/"
+        self.api_key = user.api_key  # Assuming API key is stored in the user model
+
+    def query_url(self, url):
+        params = {
+            "url": url,
+            "format": "json",
+            "api_key": self.api_key
+        }
+
+        try:
+            response = requests.get(self.base_url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return self._parse_response(data, url)
+            else:
+                return {"error": f"Failed to fetch data from PhishTank: {response.status_code}"}
+        except requests.RequestException as e:
+            return {"error": f"Request error: {str(e)}"}
+
+    def _parse_response(self, data, url):
+        if "error" in data:
+            return {"error": data["error"]}
+
+        # PhishTank returns a "phish_id" and verification status
+        phish_status = data.get("phish_status", "unknown")
+        if phish_status == "phishing":
+            return {
+                "url": url,
+                "is_phishing": True,
+                "phish_id": data.get("phish_id", ""),
+                "message": "This URL is confirmed to be phishing."
+            }
+        else:
+            return {
+                "url": url,
+                "is_phishing": False,
+                "message": "This URL is not recognized as phishing."
+            }
 
     def query(self, indicator):
         indicator_type = self.determine_indicator_type(indicator)
         if indicator_type == "url":
-            url_hash = self.get_url_hash(indicator)
-            return self.query_url(url_hash)
+            return self.query_url(indicator)
         else:
-            return {"error": "PhishLabs only supports URL queries"}
+            return {"error": "PhishTank only supports URL queries"}
 
     def determine_indicator_type(self, indicator):
-        if "://" in indicator:  # Basic check for a URL
+        # Assuming basic validation for URL format
+        if isinstance(indicator, str) and indicator.startswith("http"):
             return "url"
-        else:
-            return "unknown"
+        return "unknown"
 
-    def get_url_hash(self, url):
-        # This method would hash the URL (for example using SHA256) to query PhishLabs
-        import hashlib
-        return hashlib.sha256(url.encode('utf-8')).hexdigest()
+class OpenPhishQuery:
+    def search(self, indicator: str) -> list:
+        matches = []
+        try:
+            with open(FEED_PATHS["openphish"], "r", encoding="utf-8") as f:
+                for line in f:
+                    if indicator in line:
+                        matches.append(line.strip())
+        except Exception as e:
+            return [{"error": f"Error reading OpenPhish feed: {str(e)}"}]
+        
+        return [standardize_openphish_score(match, indicator) for match in matches]
+
+class CINSscoreQuery:
+    def search(self, indicator: str) -> list:
+        matches = []
+        try:
+            with open(FEED_PATHS["cins"], "r", encoding="utf-8") as f:
+                for line in f:
+                    if indicator in line:
+                        matches.append(line.strip())
+        except Exception as e:
+            return [{"error": f"Error reading CINS feed: {str(e)}"}]
+        
+        return [standardize_cins_score(match, indicator) for match in matches]

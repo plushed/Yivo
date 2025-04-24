@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from "react";
-import axiosInstance from "../utils/AxiosInstance";
+import axiosInstance from "../../utils/AxiosInstance";
 
 const defaultModules = {
   VirusTotal: { enabled: false, apiKey: "", weight: 1.0 },
   AlienVault: { enabled: false, apiKey: "", weight: 1.0 },
   "IBM X-Force": { enabled: false, apiKey: "", apiSecret: "", weight: 1.0 },
-  "Cisco Talos": { enabled: false, weight: 1.0 },
   Shodan: { enabled: false, apiKey: "", weight: 1.0 },
-  Censys: { enabled: false, apiKey: "", apiSecret: "", weight: 1.0 },
+  APIVoid: { enabled: false, apiKey: "", weight: 1.0 },
   AbuseIPDB: { enabled: false, apiKey: "", weight: 1.0 },
   GreyNoise: { enabled: false, apiKey: "", weight: 1.0 },
   URLScan: { enabled: false, apiKey: "", weight: 1.0 },
@@ -16,7 +15,6 @@ const defaultModules = {
 
 const modulesThatNeedSecret = [
   "IBM X-Force",
-  "Censys",
   // Add other modules that require both apiKey and apiSecret
 ];
 
@@ -25,6 +23,7 @@ const ModuleSettings = () => {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [visibility, setVisibility] = useState({});
+  const [moduleDescriptions, setModuleDescriptions] = useState({});
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -33,16 +32,27 @@ const ModuleSettings = () => {
         const fetched = res.data;
 
         const merged = { ...defaultModules };
-
-        fetched.forEach((module) => {
+        
+        fetched
+        .filter((m) => m.type === "api")
+        .forEach((module) => {
           const name = module.moduleName;
           merged[name] = {
             ...defaultModules[name],
             enabled: module.enabled ?? false,
             apiKey: module.apiKey ?? "",
             apiSecret: module.apiSecret ?? "",
-            weight: module.weight ?? 1.0, // Set default weight
+            weight: module.weight ?? 1.0,
           };
+
+          // Set descriptions and website links
+          setModuleDescriptions((prevDescriptions) => ({
+            ...prevDescriptions,
+            [name]: {
+              description: module.description || "No description available",
+              website: module.website || "#", // Default to "#" if no website is provided
+            },
+          }));
         });
 
         setModules(merged);
@@ -140,24 +150,22 @@ const ModuleSettings = () => {
             </label>
           </div>
           <div className="mt-4 space-y-2">
-            {"apiKey" in config && (
-              <div className="relative">
-                <input
-                  type={visibility[`${module}-apiKey`] ? "text" : "password"}
-                  placeholder="API Key"
-                  value={config.apiKey}
-                  onChange={(e) => handleChange(module, "apiKey", e.target.value)}
-                  className="w-full p-2 bg-gray-700 border border-gray-600 rounded"
-                />
-                <button
-                  type="button"
-                  onClick={() => toggleVisibility(module, "apiKey")}
-                  className="absolute top-2 right-2 text-sm text-gray-300"
-                >
-                  {visibility[`${module}-apiKey`] ? "Hide" : "Show"}
-                </button>
-              </div>
-            )}
+            <div className="relative">
+              <input
+                type={visibility[`${module}-apiKey`] ? "text" : "password"}
+                placeholder="API Key"
+                value={config.apiKey}
+                onChange={(e) => handleChange(module, "apiKey", e.target.value)}
+                className="w-full p-2 bg-gray-700 border border-gray-600 rounded"
+              />
+              <button
+                type="button"
+                onClick={() => toggleVisibility(module, "apiKey")}
+                className="absolute top-2 right-2 text-sm text-gray-300"
+              >
+                {visibility[`${module}-apiKey`] ? "Hide" : "Show"}
+              </button>
+            </div>
 
             {modulesThatNeedSecret.includes(module) && "apiSecret" in config && (
               <div className="relative">
@@ -193,6 +201,24 @@ const ModuleSettings = () => {
                 onChange={(e) => handleWeightChange(module, parseFloat(e.target.value))}
                 className="w-full mt-2"
               />
+            </div>
+
+            {/* Tooltip and Website */}
+            <div className="mt-4 text-sm text-gray-300">
+              <span
+                className="cursor-pointer"
+                title={moduleDescriptions[module]?.description}
+              >
+                Hover for description
+              </span>{" "}
+              <a
+                href={moduleDescriptions[module]?.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-400 underline ml-2"
+              >
+                {moduleDescriptions[module]?.website ? "Visit Website" : "No Website"}
+              </a>
             </div>
           </div>
         </div>

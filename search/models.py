@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User  # Import the User model
 from django.utils import timezone
+from search.utils import normalize_module_name
 
 # Create your models here.
 class SearchQuery(models.Model):
@@ -49,12 +50,19 @@ class IndicatorType(models.Model):
         return self.name
 
 class Module(models.Model):
+    FEED_TYPE_CHOICES = [
+    ("api", "API Connected"),
+    ("builtin", "Built-in"),
+]
     name = models.CharField(max_length=100, unique=True)  # Name of the module (e.g., VirusTotal)
     description = models.TextField()  # Description of the module
+    website = models.URLField(max_length=200, blank=True, null=True)  # URL of the module's website
     enabled = models.BooleanField(default=True)  # Whether the module is enabled for the user
     created_at = models.DateTimeField(default=timezone.now)  # When the module was created
     indicator_types = models.ManyToManyField(IndicatorType, related_name="modules", blank=True)  # Indicator types supported by the module
     default_weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Default weight
+    type = models.CharField(max_length=10, choices=FEED_TYPE_CHOICES, default="api")
+
 
     def __str__(self):
         return self.name

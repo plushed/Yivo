@@ -55,7 +55,7 @@ const Search = () => {
           },
         }
       );
-      setResults(response.data.results);
+      setResults(Object.values(response.data.results));
     } catch (err) {
       console.error(err);
       setError("An error occurred while fetching the results.");

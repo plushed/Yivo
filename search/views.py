@@ -168,7 +168,10 @@ class UserModuleSettingsView(APIView):
                 "enabled": user_module.enabled if user_module else False,
                 "apiKey": getattr(user_module, "api_key", None) if user_module else None,
                 "apiSecret": getattr(user_module, "api_secret", None) if user_module else None,
-                "weight": weight  # Add the weight to the response data
+                "weight": weight,  # Add the weight to the response data
+                "description": module.description,  # Include the description
+                "website": module.website,  # Include the website URL
+                "type":module.type,
             })
         
         return Response(response_data, status=200)

@@ -66,6 +66,7 @@ const Navbar = () => {
               <Link to="/search" className="block px-2 py-1 hover:text-purple-400">Search</Link>
               <Link to="/discover" className="block px-2 py-1 hover:text-purple-400">Discover</Link>
               <Link to="/dashboard" className="block px-2 py-1 hover:text-purple-400">Dashboard</Link>
+              <Link to="/settings" className="block px-2 py-1 hover:text-purple-400">Settings</Link>
               <button
                 onClick={logout}
                 className="block px-2 py-1 text-red-400 hover:text-red-600"

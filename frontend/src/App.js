@@ -8,9 +8,10 @@ import Discover from "./pages/Discover";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
+import SettingsPage from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import { AuthProvider, useAuth } from "./context/AuthContext"; // Ensure useAuth is being imported
-import ModuleSettings from "./pages/ModuleSettings";
+import ModuleSettings from "./pages/settings/ModuleSettings";
 
 function App() {
   return (
@@ -25,6 +26,7 @@ function App() {
             <Route path="/module-settings" element={<ModuleSettings />} />
 
             {/* Protected routes */}
+            <Route path="/settings" element={<SettingsPage />} />
             <Route
               path="/search"
               element={<ProtectedRoute component={Search} />}

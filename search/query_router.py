@@ -29,25 +29,40 @@ def route_query(user, indicator: str, indicator_type: str, enabled_modules: list
 
     for module in selected_modules:
         try:
-            query_class = MODULE_QUERIES[module]['class']
-            query_instance = query_class(user)
+            normalized_module = module.lower()
+
+            # Retrieve and instantiate the query class
+            module_config = MODULE_QUERIES.get(module)
+            if not module_config or 'class' not in module_config:
+                raise KeyError(f"Module '{module}' is missing or misconfigured.")
+
+            query_instance = module_config['class'](user)
             raw_result = query_instance.query(indicator)
-
-            # Use standardizer
-            if module in STANDARDIZERS:
-                standardized = STANDARDIZERS[module](raw_result, indicator)
-
+                # Debugging: Print raw_result and its type to confirm its structure
+            print("Raw result:", raw_result)
+            print("Type of raw result:", type(raw_result))
+            # Standardize results if a standardizer exists
+            if normalized_module in STANDARDIZERS:
+                standardized = STANDARDIZERS[normalized_module](raw_result, indicator)
                 results[module] = standardized
             else:
-                logger.warning(f"No standardizer found for module: {module}")
-                results[module] = {"error": "No standardizer found", "raw": raw_result}
+                logger.warning(f"No standardizer registered for module '{module}'")
+                results[module] = {
+                    "error": "Standardizer not available for this module.",
+                    "raw": raw_result
+                }
 
         except KeyError as e:
-            logger.error(f"Module '{module}' or its class is not found in MODULE_QUERIES: {e}")
-            results[module] = {'error': f"Module '{module}' not found or improperly configured."}
-        
+            logger.error(f"[{module}] KeyError: {e}")
+            results[module] = {
+                "error": f"Configuration error for module '{module}': {e}"
+            }
+
         except Exception as e:
-            logger.error(f"Error executing query for {module}: {str(e)}")
-            results[module] = {'error': str(e)}
+            logger.exception(f"[{module}] Unexpected error during query execution.")
+            results[module] = {
+                "error": f"Failed to query module '{module}': {str(e)}"
+            }
+    logger.debug(f"Results after processing modules: {results}")
 
     return results
