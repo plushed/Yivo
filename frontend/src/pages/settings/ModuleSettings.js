@@ -10,7 +10,6 @@ const defaultModules = {
   AbuseIPDB: { enabled: false, apiKey: "", weight: 1.0 },
   GreyNoise: { enabled: false, apiKey: "", weight: 1.0 },
   URLScan: { enabled: false, apiKey: "", weight: 1.0 },
-  PhishLabs: { enabled: false, apiKey: "", weight: 1.0 },
 };
 
 const modulesThatNeedSecret = [
@@ -130,7 +129,7 @@ const ModuleSettings = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6 text-purple-500">Module Settings</h1>
+      <h2 className="text-2xl font-bold mb-4">Module Settings</h2>
       {Object.entries(modules).map(([module, config]) => (
         <div key={module} className="mb-6 p-4 border border-gray-700 rounded bg-gray-800 text-white">
           <div className="flex items-center justify-between">

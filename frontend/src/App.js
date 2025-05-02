@@ -10,49 +10,42 @@ import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import SettingsPage from "./pages/Settings";
 import NotFound from "./pages/NotFound";
-import { AuthProvider, useAuth } from "./context/AuthContext"; // Ensure useAuth is being imported
-import ModuleSettings from "./pages/settings/ModuleSettings";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+
+// Protected route wrapper
+const ProtectedRoute = ({ component: Component, pageTitle }) => {
+  const { user } = useAuth();
+  return user ? (
+    <Layout pageTitle={pageTitle}>
+      <Component />
+    </Layout>
+  ) : (
+    <Navigate to="/login" />
+  );
+};
 
 function App() {
   return (
     <AuthProvider>
       <Router>
-        <Layout>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/about" element={<About />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/module-settings" element={<ModuleSettings />} />
+        <Routes>
+          {/* Public routes */}
+          <Route path="/" element={<Layout><Home /></Layout>} />
+          <Route path="/about" element={<Layout pageTitle="About"><About /></Layout>} />
+          <Route path="/login" element={<Layout><Login /></Layout>} />
+          <Route path="/register" element={<Layout><Register /></Layout>} />
 
-            {/* Protected routes */}
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route
-              path="/search"
-              element={<ProtectedRoute component={Search} />}
-            />
-            <Route
-              path="/discover"
-              element={<ProtectedRoute component={Discover} />}
-            />
-            <Route
-              path="/dashboard"
-              element={<ProtectedRoute component={Dashboard} />}
-            />
+          {/* Protected routes with pageTitle headers */}
+          <Route path="/settings" element={<ProtectedRoute component={SettingsPage} pageTitle="Settings" />} />
+          <Route path="/search" element={<ProtectedRoute component={Search} pageTitle="Search" />} />
+          <Route path="/discover" element={<ProtectedRoute component={Discover} pageTitle="Discover" />} />
+          <Route path="/dashboard" element={<ProtectedRoute component={Dashboard} pageTitle="Dashboard" />} />
 
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Layout>
+          <Route path="*" element={<Layout><NotFound /></Layout>} />
+        </Routes>
       </Router>
     </AuthProvider>
   );
 }
-
-// Protected route component
-const ProtectedRoute = ({ component: Component }) => {
-  const { user } = useAuth();  // Using the context to check user state
-
-  return user ? <Component /> : <Navigate to="/login" />;
-};
 
 export default App;

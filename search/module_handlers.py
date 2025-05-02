@@ -1,21 +1,39 @@
 # search/module_handlers.py
 import logging
+from .utils import calculate_overall_risk_score
+from .models import UserModule
+import re
 
 # Initialize the logger
 logger = logging.getLogger(__name__)
 
 def standardize_abuseipdb(result, indicator=None):
-    # Access the nested 'data' key and extract the 'ipAddress'
-    data = result.get("data", {})  # Retrieve the entire 'data' block
-    
-    ip_address = data.get("ipAddress")  # Safely retrieve the ipAddress
-    
-    # Now pass the 'data' object to the score calculation function
+    if not isinstance(result, dict) or "errors" in result:
+        return {
+            "module": "abuseipdb",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": result.get("errors") if isinstance(result, dict) else "Invalid format"},
+            "raw": result
+        }
+
+    data = result.get("data", {})
+    ip_address = data.get("ipAddress", indicator)
+
+    if not data or ip_address is None:
+        return {
+            "module": "abuseipdb",
+            "indicator": indicator,
+            "risk_score": 0,  # IP not found, treat as benign
+            "summary": {"note": "No data found for IP"},
+            "raw": result
+        }
+
     risk_score = calculate_abuseipdb_score(data)
-    
+
     return {
         "module": "abuseipdb",
-        "indicator": ip_address,  # Use the extracted IP address here
+        "indicator": ip_address,
         "risk_score": risk_score,
         "summary": {
             "abuseConfidenceScore": data.get("abuseConfidenceScore"),
@@ -26,6 +44,7 @@ def standardize_abuseipdb(result, indicator=None):
         },
         "raw": result,
     }
+
 
 
 def calculate_abuseipdb_score(data):
@@ -55,32 +74,43 @@ def calculate_abuseipdb_score(data):
     # Ensure the score is between 0 and 100
     return min(risk_score, 100)
 
-
 def standardize_virustotal(result, original_indicator=None):
-    # Fetch the relevant fields from the response
+    if not isinstance(result, dict) or "error" in result:
+        return {
+            "module": "virustotal",
+            "indicator": original_indicator,
+            "risk_score": "N/A",
+            "summary": {"error": result.get("error") if isinstance(result, dict) else "Invalid format"},
+            "raw": result
+        }
+
     data = result.get("data", {})
     attributes = data.get("attributes", {})
 
-    # Extract the summary stats from last_analysis_stats
     last_analysis_stats = attributes.get("last_analysis_stats", {})
-    
-    # Set the default values for the summary fields
+    if not last_analysis_stats:
+        return {
+            "module": "virustotal",
+            "indicator": original_indicator or data.get("id", "unknown"),
+            "risk_score": 0,  # No detections, likely benign or not found
+            "summary": {},
+            "raw": result,
+        }
+
     malicious = last_analysis_stats.get("malicious", 0)
     suspicious = last_analysis_stats.get("suspicious", 0)
     undetected = last_analysis_stats.get("undetected", 0)
     harmless = last_analysis_stats.get("harmless", 0)
     reputation = attributes.get("reputation", 0)
 
-    # Include total_votes as part of the result
     total_votes = attributes.get("total_votes", {})
     total_malicious = total_votes.get("malicious", 0)
     total_harmless = total_votes.get("harmless", 0)
 
-    # Now, calculate the risk score based on the updated summary and votes
     return {
         "module": "virustotal",
         "indicator": original_indicator or data.get("id", "unknown"),
-        "risk_score": calculate_virustotal_score(last_analysis_stats),  # Calculate from last_analysis_stats
+        "risk_score": calculate_virustotal_score(last_analysis_stats),
         "summary": {
             "malicious": malicious,
             "suspicious": suspicious,
@@ -93,41 +123,77 @@ def standardize_virustotal(result, original_indicator=None):
         "raw": result,
     }
 
+
 def calculate_virustotal_score(last_analysis_stats):
-    # We calculate based on the last_analysis_stats (malicious, suspicious, undetected, harmless)
-    total = sum([last_analysis_stats.get(key, 0) for key in ["malicious", "suspicious", "undetected", "harmless"]])
-    
-    if total == 0:
+    malicious = last_analysis_stats.get("malicious", 0)
+    suspicious = last_analysis_stats.get("suspicious", 0)
+    harmless = last_analysis_stats.get("harmless", 0)
+
+    if malicious >= 10:
+        return 100
+    elif malicious >= 5:
+        return 90 + suspicious * 2
+    elif malicious > 0:
+        return 70 + suspicious * 2
+    elif suspicious >= 5:
+        return 50
+    elif suspicious > 0:
+        return 30
+    else:
         return 0
 
-    # Let's consider that 'malicious' and 'suspicious' are weighted more heavily in the risk score
-    score = (last_analysis_stats.get("malicious", 0) * 5 + last_analysis_stats.get("suspicious", 0)) / total * 100
-    return round(score)
-
-
-
 def standardize_alienvault(result, indicator=None):
-    pulse_count = result.get("pulse_info", {}).get("count", 0)
-    malware = result.get("malware", [])
-    reputation = result.get("reputation", 0)
-    risk_score = min(pulse_count * 10 + len(malware) * 20 + reputation, 100)
+    if not isinstance(result, dict) or "error" in result:
+        return {
+            "module": "alienvault",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": result.get("error") if isinstance(result, dict) else "Invalid format"},
+            "raw": result
+        }
+
+    sections = result.get("sections", {})
+
+    # Extract from each section if present
+    general = sections.get("general", {})
+    malware_section = sections.get("malware", {})
+    reputation_section = sections.get("reputation", {})
+    
+    # Pulse count is only available in 'general'
+    pulse_info = general.get("pulse_info", {})
+    pulse_count = pulse_info.get("count", 0)
+
+    # Malware could be a list or a dict with a 'data' key depending on endpoint
+    malware_data = malware_section.get("data", malware_section) if malware_section else []
+    malware_count = len(malware_data) if isinstance(malware_data, list) else 0
+
+    # Reputation is a single int field in reputation section
+    reputation_score = reputation_section.get("reputation", 0)
+
+    # Compute risk score
+    risk_score = calculate_alienvault_score({
+        "pulse_info": pulse_info,
+        "malware": malware_data,
+        "reputation": reputation_score
+    })
+
     return {
         "module": "alienvault",
-        "indicator": result.get("indicator"),
+        "indicator": result.get("indicator", indicator),
         "risk_score": risk_score,
         "summary": {
             "pulse_count": pulse_count,
-            "malware_count": len(malware),
-            "reputation": reputation
+            "malware_count": malware_count,
+            "reputation": reputation_score
         },
         "raw": result
     }
 
 def calculate_alienvault_score(data):
     pulse_count = data.get("pulse_info", {}).get("count", 0)
-    malware = len(data.get("malware", []))
+    malware_count = len(data.get("malware", []))
     reputation = data.get("reputation", 0)
-    score = min(pulse_count * 10 + malware * 20 + reputation, 100)
+    score = min(pulse_count * 10 + malware_count * 20 + reputation, 100)
     return round(score)
 
 def standardize_ibmxforce(result, indicator=None):
@@ -158,12 +224,22 @@ def calculate_ibmxforce_score(data):
 
 
 def standardize_shodan(result, indicator=None):
+    if not isinstance(result, dict) or "error" in result:
+        return {
+            "module": "shodan",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": result.get("error") if isinstance(result, dict) else "Invalid format"},
+            "raw": result
+        }
+
     vulns = result.get("vulns", [])
     ports = result.get("ports", [])
     risk_score = min(len(vulns) * 10 + len(ports) * 2, 100)
+
     return {
         "module": "shodan",
-        "indicator": result.get("ip_str"),
+        "indicator": result.get("ip_str", indicator),
         "risk_score": risk_score,
         "summary": {
             "vulns": vulns,
@@ -171,6 +247,7 @@ def standardize_shodan(result, indicator=None):
         },
         "raw": result
     }
+
 
 def calculate_shodan_score(data):
     # Extract relevant data from the input
@@ -205,17 +282,16 @@ def calculate_shodan_score(data):
     return min(total_score, 100)
 
 def standardize_apivoid(result, indicator=None):
-    # Extracting relevant data from the apivoid response
-    services = result.get("services", [])
-    vulnerabilities = result.get("vulnerabilities", [])
-    threat_score = result.get("threat_score", 0)  # Assuming 'threat_score' is part of the response
+    data = result.get("data", {})  # <--- FIX
+    services = data.get("services", [])
+    vulnerabilities = data.get("vulnerabilities", [])
+    threat_score = data.get("threat_score", 0)
 
-    # Calculating the risk score using a different method, if applicable
     risk_score = min(threat_score + len(vulnerabilities) * 10 + len(services) * 5, 100)
     
     return {
         "module": "apivoid",
-        "indicator": result.get("ip"),
+        "indicator": data.get("ip"),
         "risk_score": risk_score,
         "summary": {
             "services": services,
@@ -234,12 +310,28 @@ def calculate_apivoid_score(data):
 
 
 def standardize_greynoise(result, indicator=None):
+    if not isinstance(result, dict):
+        return None
+
+    # If message indicates a failure or no result, return "N/A"
+    if result.get("message", "").lower() != "success":
+        return {
+            "module": "greynoise",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {
+                "error": result.get("message", "Unknown error")
+            },
+            "raw": result
+        }
+
     classification = result.get("classification", "unknown")
     tags = result.get("tags", [])
-    risk_score = {"malicious": 90, "benign": 10, "unknown": 50}.get(classification.lower(), 50)
+    risk_score = calculate_greynoise_score(result)
+
     return {
         "module": "greynoise",
-        "indicator": result.get("ip"),
+        "indicator": result.get("ip", indicator),
         "risk_score": risk_score,
         "summary": {
             "classification": classification,
@@ -248,9 +340,15 @@ def standardize_greynoise(result, indicator=None):
         "raw": result
     }
 
+
 def calculate_greynoise_score(data):
     classification = data.get("classification", "").lower()
-    return {"malicious": 90, "unknown": 50, "benign": 10}.get(classification, 50)
+    return {
+        "malicious": 90,
+        "unknown": 50,
+        "benign": 0
+    }.get(classification, 0)
+
 
 def standardize_urlscan(result, indicator=None):
     verdicts = result.get("verdicts", {})
@@ -271,105 +369,113 @@ def calculate_urlscan_score(data):
     return int(data.get("score", 0))
 
 
-def handle_threatfox_response(response_json):
-    # Check the overall response status
-    print(f"Response status: {response_json.get('query_status')}")
-    
-    if response_json.get("query_status") != "ok":
-        return {"error": "ThreatFox query failed", "raw": response_json}
-
-    # Get the indicators
-    indicators = response_json.get("data", [])
-    print(f"Found {len(indicators)} indicators.")
-    
-    if not indicators:
-        return {"error": "No data found", "raw": response_json}
-
-    results = []
-    for indicator in indicators:
-        print(f"Processing indicator: {indicator.get('ioc')}")
-        # Call standardize function with the correct indicator data
-        result = standardize_threatfox_score(indicator)
-        print(f"Standardized result: {result}")
-        results.append(result)
-
-    return results
-
-
 def standardize_threatfox_score(result, indicator=None):
-    # Check the result type before processing
-    if isinstance(result, str):
-        print("Error: Received a string instead of a dictionary")
-        return {"error": f"Expected a dictionary, but received a string: {result}"}
-    
-    # If result is a dictionary, proceed
-    data = result.get('data', [])[0] if result.get('data') else {}
+    if not isinstance(result, dict):
+        return {
+            "module": "threatfox",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": "Invalid format"},
+            "raw": result
+        }
 
-    # Debugging: Print the 'data' object and its type
-    print("Data from result:", data)
-    print("Type of data:", type(data))
+    # Handle known benign case: no results for the indicator
+    if result.get("query_status") == "no_results" or result.get("error") == "No results found for the given indicator":
+        return {
+            "module": "threatfox",
+            "indicator": indicator,
+            "risk_score": 0,  # Benign
+            "summary": {"note": "No results found for the given indicator"},
+            "raw": result
+        }
 
-    # Ensure `ioc` is being passed correctly
-    indicator = data.get("ioc", indicator)
-    
-    threat_type = data.get("ioc_type", "unknown")
-    confidence = int(data.get("confidence_level", 0))
-    tags = data.get("tags", [])
-    
-    risk_score = calculate_threatfox_score(data)
+    # Handle all other errors
+    if "error" in result:
+        return {
+            "module": "threatfox",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": result["error"]},
+            "raw": result
+        }
+
+    data = result.get("data", [])
+    if not data or not isinstance(data, list) or not isinstance(data[0], dict):
+        return {
+            "module": "threatfox",
+            "indicator": indicator,
+            "risk_score": "N/A",
+            "summary": {"error": "No valid data"},
+            "raw": result
+        }
+
+    data_item = data[0]
+    indicator = indicator or data_item.get("ioc")
+    risk_score = calculate_threatfox_score(data_item)
 
     return {
         "module": "threatfox",
         "indicator": indicator,
         "risk_score": risk_score,
         "summary": {
-            "threat_type": threat_type,
-            "confidence": confidence,
-            "tags": tags,
-            "reference": data.get("reference"),
+            "threat_type": data_item.get("threat_type"),
+            "confidence": data_item.get("confidence_level", 0),
+            "tags": data_item.get("tags", []),
+            "reference": data_item.get("reference"),
         },
-        "raw": result
+        "raw": result,
     }
 
-
-
 def calculate_threatfox_score(data):
-    # Extract data for easier reference
     confidence = int(data.get("confidence_level", 0))
     threat_type = data.get("threat_type", "").lower()
     malware_name = (data.get("malware") or "").lower()
     malware_aliases = (data.get("malware_alias") or "").lower()
     tags = [tag.lower() for tag in data.get("tags", [])]
-    
-    # Base score starts at 0
-    base_score = 0
-    
-    # Adjust base score based on threat type
-    high_risk_types = ["botnet_cc", "malware_download", "c2", "exploit"]
+
+    # Base score - if ThreatFox knows about it, it starts risky
+    base_score = 50
+
+    # High-risk threat types
+    high_risk_types = [
+        "botnet_cc", "malware_download", "payload_delivery", "c2", "exploit", "ransomware",
+        "keylogger", "stealer", "rat", "banking_trojan", "loader"
+    ]
     if threat_type in high_risk_types:
-        base_score += 30  # High-risk threat type
+        base_score += 25
 
-    # Add points if malware is a known risky malware
-    risky_malware = ["cobalt_strike", "emotet", "trickbot", "agent_tesla", "quakbot"]
-    if any(m in malware_name for m in risky_malware):
-        base_score += 40  # Risky malware
-    
-    # Add points for risky tags
-    risky_tags = ["apt", "cobaltstrike", "beacon", "exploit-kit", "loader"]
+    # Risky malware names (expanded list)
+    risky_malware = [
+        "cobalt_strike", "emotet", "trickbot", "agent_tesla", "quakbot", "qbot",
+        "raccoon", "redline", "lokibot", "zeus", "remcos", "njrat",
+        "blackbasta", "lockbit", "clop", "conti", "blackcat", "alphv", "darkside"
+    ]
+    if any(m in malware_name for m in risky_malware) or any(m in malware_aliases for m in risky_malware):
+        base_score += 30
+
+    # Risky tags (expanded)
+    risky_tags = [
+        "apt", "cobaltstrike", "beacon", "exploit-kit", "loader", "stealer",
+        "banker", "ransomware", "keylogger", "rat", "remote-access-trojan",
+        "botnet", "infostealer"
+    ]
     if any(tag in risky_tags for tag in tags):
-        base_score += 20  # Risky tag
+        base_score += 20
 
-    # Cap the base score at 100 (can't go higher than that)
-    base_score = min(base_score, 100)
+    # Reduce score slightly for "less risky" categories (adware, miners)
+    low_risk_tags = ["adware", "miner", "crypto-miner"]
+    if any(tag in low_risk_tags for tag in tags):
+        base_score -= 15
 
-    # Now apply confidence to increase or decrease the final score
-    # If confidence is high (e.g., 100), the score stays the same or increases
+    # Cap the base score between 0 and 100
+    base_score = max(0, min(base_score, 100))
+
+    # Apply confidence weighting
     final_score = base_score * (confidence / 100)
 
-    # Round the final score to avoid decimals and cap at 100
-    final_score = round(min(final_score, 100))
+    # Round and ensure the final score is max 100
+    return round(min(final_score, 100))
 
-    return final_score
 
 def handle_malwarebazaar_response(response_json):
     print(f"Response status: {response_json.get('query_status')}")
@@ -435,55 +541,20 @@ def calculate_malwarebazaar_score(data):
 
     return min(score, 100)
 
-def handle_urlhaus_response(response_json):
-    # Debugging: Print out the response type and raw content for inspection
-    print(f"Response type: {type(response_json)}")
-    print(f"Raw result: {response_json}")
-
-    # Check if the response contains an error field
-    if 'error' in response_json:
-        return {"error": response_json['error'], "raw": response_json}
-
-    # Check for the 'data' field and if it is valid
-    if 'data' not in response_json or not isinstance(response_json['data'], dict):
-        return {"error": "Missing or invalid 'data' field in URLHaus response", "raw": response_json}
-
-    # If response structure is correct, proceed with standardization
-    data = response_json.get("data", {})
-    standardized = standardize_urlhaus_score(data)
-    print(f"Standardized result: {standardized}")
-    return [standardized]
-
-
-def standardize_urlhaus_score(result, indicator=None):
-    if isinstance(result, str):
-        print(f"Error: Received a string instead of a dictionary - {result}")
-        return {"error": f"Expected a dictionary, but received a string: {result}"}
-
-    if not isinstance(result, dict):
-        return {"error": "URLHaus result is not a valid dictionary", "raw": result}
-    
-    indicator = result.get("url", indicator)
-    tags = result.get("tags", [])
-    threat_type = result.get("threat", "unknown")
-    reporter = result.get("reporter", "unknown")
-
-    # Calculate risk score based on the data
-    risk_score = calculate_urlhaus_score(result)
-
+def standardize_urlhaus_score(match: list, indicator: str) -> dict:
+    found = bool(match)
     return {
         "module": "urlhaus",
         "indicator": indicator,
-        "risk_score": risk_score,
+        "risk_score": 100 if found else 0,
         "summary": {
-            "threat_type": threat_type,
-            "tags": tags,
-            "reporter": reporter,
-            "reference": result.get("urlhaus_reference", ""),
+            "match_count": len(match),
+            "threat_types": list({m.get("threat") for m in match if m.get("threat")}),
+            "source": "Offline URLHaus feed",
+            "confidence": "high" if found else "none"
         },
-        "raw": result
+        "raw": match
     }
-
 
 def calculate_urlhaus_score(data):
     score = 0
@@ -606,20 +677,21 @@ def calculate_onionoo_score(data):
     contact = data.get("contact", "").lower()
     bandwidth = data.get("advertised_bandwidth", 0)
 
-    if "exit" in flags:
+    if "badexit" in flags:
+        score += 50
+    elif "exit" in flags:
         score += 40
     elif "guard" in flags:
         score += 20
-    if bandwidth > 10000000:  # >10MBps could be considered high bandwidth
+
+    if bandwidth > 10000000:
         score += 20
-    if not contact:
+
+    if not contact and any(f in flags for f in ("exit", "badexit", "guard")):
         score += 10
-    if "badexit" in flags:
-        score += 30
 
     return min(score, 100)
 
-# search/modules/builtin/handlers.py
 
 def standardize_openphish_score(match: str, indicator: str) -> dict:
     return {
@@ -634,19 +706,106 @@ def standardize_openphish_score(match: str, indicator: str) -> dict:
         "raw": match
     }
 
-def standardize_cins_score(match: str, indicator: str) -> dict:
+def standardize_cins_score(match: list, indicator: str) -> dict:
+    found = bool(match)
     return {
-        "module": "cins",
+        "module": "cinsscore",
         "indicator": indicator,
-        "risk_score": 100,
+        "risk_score": 100 if found else 0,
         "summary": {
             "match": match,
             "source": "CINS Bad Guy IPs",
-            "confidence": "high"
+            "confidence": "high" if found else "none"
         },
         "raw": match
     }
 
+
+def aggregate_results_for_user(user, indicator_results: list):
+    """
+    Takes a list of standardized result dicts per module and computes an overall risk score
+    based on the user-specific module weights.
+    """
+    # Step 1: Build module:weight mapping for the user
+    user_module_weights = {
+        um.module.name.lower(): float(um.weight)
+        for um in UserModule.objects.filter(user=user, enabled=True, module__enabled=True)
+    }
+
+    # Step 2: Ensure indicator_results is a list
+    if not isinstance(indicator_results, list):
+        logger.error(f"Expected a list for indicator_results, but got {type(indicator_results)}")
+        return {"error": "Invalid data type for indicator_results"}
+
+    # Step 3: Initialize module_scores
+    module_scores = []
+
+    # Step 4: Process the results
+    for result in indicator_results:
+        # Debugging: Log the type and contents of each result in the list
+        logger.debug(f"Processing result: {result} (Type: {type(result)})")
+        
+        if isinstance(result, dict):
+            module_name = result.get("module", "").lower()
+            score = result.get("risk_score")
+
+            # Check if both module_name and score are valid
+            if module_name and isinstance(score, (int, float)):
+                # If the module exists in user_module_weights, apply the corresponding weight
+                if module_name in user_module_weights:
+                    weighted_score = score * user_module_weights[module_name]
+                    module_scores.append(weighted_score)  # Append valid score to module_scores
+                else:
+                    logger.warning(f"No weight found for module {module_name}. Skipping module scoring.")
+            else:
+                logger.warning(f"Invalid score or module for result: {result}")
+        else:
+            logger.error(f"Expected a dictionary for result, but got {type(result)}. Skipping.")
+
+    # Step 5: If no valid module scores were found, return early
+    if not module_scores:
+        logger.error("No valid module scores found. Returning default error response.")
+        return {"error": "No valid module scores found"}
+
+    # Step 6: Compute the overall risk score
+    overall_score = calculate_overall_risk_score(module_scores, user_module_weights)
+
+    return {
+        "results": indicator_results,
+        "overall_score": overall_score
+    }
+
+def standardize_ipwhois_info(result, indicator=None):
+    if not isinstance(result, dict):
+        return {"error": "Invalid response format from IPWhois module", "raw": result}
+
+    ip = result.get("ip", indicator)
+    org = result.get("org", "unknown")
+    country = result.get("country", "unknown")
+    isp = result.get("isp", "unknown")
+    type_ = result.get("type", "unknown")
+    city = result.get("city", "unknown")
+    region = result.get("region", "unknown")
+    country_code = result.get("country_code", "unknown")
+    asn = result.get("asn", "unknown")
+    domain = result.get("domain", "unknown")
+    
+    return {
+        "module": "ipwhois",
+        "indicator": ip,
+        "data": {
+            "org": org,
+            "isp": isp,
+            "country": country,
+            "city": city,
+            "region": region,
+            "country_code": country_code,
+            "asn": asn,
+            "domain": domain,
+            "type": type_,
+        },
+        "raw": result
+    }
 
 STANDARDIZERS = {
     "abuseipdb": standardize_abuseipdb,
@@ -662,7 +821,8 @@ STANDARDIZERS = {
     "urlscan": standardize_urlscan,
     "onionoo": standardize_onionoo,
     "openphish": standardize_openphish_score,
-    "cins": standardize_cins_score,
+    "cinsscore": standardize_cins_score,
+    "ipwhois": standardize_ipwhois_info,
 }
 
 RISK_SCORERS = {

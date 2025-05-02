@@ -2,18 +2,22 @@ import { useState } from 'react';
 import ModuleSettings from './settings/ModuleSettings';
 import BuildinFeeds from './settings/BuildinFeeds';
 import ProfileSettings from './settings/ProfileSettings';
+import RSSFeedsSettings from './settings/RSSFeedsSettings';
+
 
 const tabs = [
   { name: 'Profile', key: 'profile' },
   { name: 'API-Connected Feeds', key: 'api-feeds' },
   { name: 'Built-in Feeds', key: 'automatic-feeds' },
+  { name: 'RSS Feeds', key: 'rss-feeds' },
 ];
+
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('profile');
 
   return (
-    <div className="p-4 max-w-4xl mx-auto">
+    <div className="p-4 max-w-4xl mx-auto pt-8 lg:pt-12"> {/* Added padding-top for larger screens */}
       <div className="border-b border-gray-700 mb-6">
         <nav className="-mb-px flex space-x-8">
           {tabs.map((tab) => (
@@ -31,11 +35,12 @@ export default function SettingsPage() {
           ))}
         </nav>
       </div>
-
+          
       <div>
         {activeTab === 'api-feeds' && <ModuleSettings />}
         {activeTab === 'automatic-feeds' && <BuildinFeeds />}
         {activeTab === 'profile' && <ProfileSettings />}
+        {activeTab === 'rss-feeds' && <RSSFeedsSettings />}
       </div>
     </div>
   );

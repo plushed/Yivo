@@ -7,6 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from .serializers import ModuleSerializer
 from .dispatch_table import MODULE_QUERIES
 import re
+from .module_handlers import aggregate_results_for_user
 from django.core.exceptions import ValidationError
 from .query_router import route_query
 import logging
@@ -35,28 +36,21 @@ class SearchQueryView(APIView):
         # Get the list of enabled modules for the user
         enabled_modules = [um.module.name for um in UserModule.objects.filter(user=request.user, enabled=True)]
         
-        # Log enabled modules for debugging
-        logger.debug(f"Enabled modules for user: {enabled_modules}")
-        
         # Filter the modules that support the given indicator type
         applicable_modules = [
             module for module in enabled_modules
             if module in MODULE_QUERIES and indicator_type in MODULE_QUERIES[module]['supported_types']
         ]
 
-        # Log the applicable modules
-        logger.debug(f"Applicable modules: {applicable_modules}")
-
         # If no modules support the indicator type, return an error
         if not applicable_modules:
             return Response({"detail": "No enabled modules support the given indicator type."}, status=400)
 
         # Get the query results from the selected modules
-        logger.debug(f"Calling route_query with indicator: {indicator}, indicator_type: {indicator_type}, modules: {applicable_modules}")
         results = route_query(request.user, indicator, indicator_type, applicable_modules)
 
-        # Log the results
-        logger.debug(f"Query results: {results}")
+        # Aggregate results and calculate overall score
+        #overall_score = aggregate_results_for_user(request.user, results)
 
         # Save the search query and the risk score in the database
         search_query = SearchQuery.objects.create(
@@ -64,10 +58,12 @@ class SearchQueryView(APIView):
             indicator=indicator,
             indicator_type=indicator_type,
             results=results,  # Assuming results are saved as a JSON field or similar
+            #risk_score=overall_score
         )
 
         return Response({
             "results": results,
+            #"overall_score": overall_score
         }, status=200)
 
 

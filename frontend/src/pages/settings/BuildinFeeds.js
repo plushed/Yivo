@@ -2,9 +2,10 @@ import React, { useState, useEffect } from "react";
 import axiosInstance from "../../utils/AxiosInstance";
 
 const defaultBuiltinFeeds = {
-  "Onionoo": { enabled: false, weight: 1.0 },
-  "CINSscore": { enabled: false, weight: 1.0 },
-  "OpenPhish": { enabled: false, weight: 1.0 },
+  "Onionoo": { enabled: true, weight: 1.0 },
+  "IPWhois": { enabled: true, weight: 1.0 },
+  "CINSscore": { enabled: true, weight: 1.0 },
+  "OpenPhish": { enabled: true, weight: 1.0 },
 };
 
 const BuiltinFeedSettings = () => {
@@ -87,7 +88,7 @@ const BuiltinFeedSettings = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6 text-purple-500">Builtin Feed Settings</h1>
+      <h2 className="text-2xl font-bold mb-4">Builtin Feed Settings</h2>
       {Object.entries(feeds).map(([feed, config]) => (
         <div key={feed} className="mb-6 p-4 border border-gray-700 rounded bg-gray-800 text-white">
           <div className="flex items-center justify-between">

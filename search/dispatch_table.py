@@ -14,6 +14,7 @@ from .queries import (
     PhishTankQuery,
     OpenPhishQuery,
     CINSscoreQuery,
+    IPWhoisQuery,
 )
 
 
@@ -93,7 +94,7 @@ MODULE_QUERIES = {
     },
     'URLHaus': {
         'class': URLHausQuery,
-        'supported_types': ['url', 'domain', 'ip'],
+        'supported_types': ['url', 'domain'],
         'default_weight': 1.0,
         'description': 'URLHaus tracks and shares information about malicious URLs used for malware distribution.',
         'website': 'https://urlhaus.abuse.ch/',
@@ -137,6 +138,14 @@ MODULE_QUERIES = {
         'default_weight': 0.7,
         'description': 'CINSscore provides a threat intelligence feed of known malicious IPs.',
         'website': 'https://cinsscore.com/',
+        'type': 'builtin',
+    },
+    'IPWhois': {
+        'class': IPWhoisQuery,
+        'supported_types': ['ip'],
+        'default_weight': 0.0,
+        'description': 'Basic IP WHOIS.',
+        'website': 'https://ipwho.is/',
         'type': 'builtin',
     },
 }

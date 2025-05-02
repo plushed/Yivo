@@ -22,5 +22,6 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/accounts/', include('accounts.urls')),  # Your custom accounts URLs
     path('api/', include('search.urls')),  # Include search app's URLs
+    path('api/', include('discover.urls')),
 
 ]

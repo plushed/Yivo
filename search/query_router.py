@@ -23,7 +23,6 @@ def get_modules_for_type(indicator_type: str, enabled_modules: list[str]) -> lis
     ]
 
 def route_query(user, indicator: str, indicator_type: str, enabled_modules: list[str]) -> dict:
-    logger.debug(f"Arguments received - user: {user}, indicator: {indicator}, indicator_type: {indicator_type}, enabled_modules: {enabled_modules}")
     results = {}
     selected_modules = get_modules_for_type(indicator_type, enabled_modules)
 

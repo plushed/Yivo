@@ -1,8 +1,13 @@
 import requests
+from requests.auth import HTTPBasicAuth
 import time
 import logging
 import json
 import re
+import os
+import base64
+from urllib.parse import urlparse
+from urllib.parse import quote
 from django.core.cache import cache
 from django.db.models import Q
 from .models import UserModule, Module
@@ -24,6 +29,13 @@ def get_api_key(user, module_name):
             return None
     except UserModule.DoesNotExist:
         logger.warning(f"No UserModule entry found for user {user.username} and module {module_name}")
+        return None
+
+def get_api_secret(user, module_name):
+    try:
+        user_module = UserModule.objects.get(user=user, module__name=module_name)
+        return user_module.api_secret
+    except UserModule.DoesNotExist:
         return None
 
 # Helper function to handle rate limiting (sleep time between requests)
@@ -146,45 +158,44 @@ class AlienVaultQuery:
     def _get_api_key(self):
         return get_api_key(self.user, self.module_name)
 
-    def query_file(self, file_hash):
+    def _query_section(self, indicator_type, indicator, section):
         api_key = self._get_api_key()
-        if api_key:
-            url = f"{self.base_url}/indicators/file/{file_hash}/general"
-            headers = {"X-OTX-API-KEY": api_key}
-            response = requests.get(url, headers=headers)
-            rate_limit_request()
-            return self._handle_response(response)
-        return {"error": "API key not found or not enabled"}
+        if not api_key:
+            return {"error": "API key not found or not enabled"}
 
-    def query_url(self, url):
-        api_key = self._get_api_key()
-        if api_key:
-            url = f"{self.base_url}/indicators/url/{url}/general"
-            headers = {"X-OTX-API-KEY": api_key}
-            response = requests.get(url, headers=headers)
-            rate_limit_request()
-            return self._handle_response(response)
-        return {"error": "API key not found or not enabled"}
+        encoded = quote(indicator, safe="")
+        url = f"{self.base_url}/indicators/{indicator_type}/{encoded}/{section}"
+        headers = {"X-OTX-API-KEY": api_key}
+        response = requests.get(url, headers=headers)
+        rate_limit_request()
+
+        try:
+            return response.json()
+        except Exception:
+            return {"error": "Invalid JSON response"}
 
     def query_ip(self, ip_address):
-        api_key = self._get_api_key()
-        if api_key:
-            url = f"{self.base_url}/indicators/IPv4/{ip_address}/general"
-            headers = {"X-OTX-API-KEY": api_key}
-            response = requests.get(url, headers=headers)
-            rate_limit_request()
-            return self._handle_response(response)
-        return {"error": "API key not found or not enabled"}
+        sections = ["general", "reputation", "malware"]
+        return self._aggregate_sections("IPv4", ip_address, sections)
 
     def query_domain(self, domain):
-        api_key = self._get_api_key()
-        if api_key:
-            url = f"{self.base_url}/indicators/domain/{domain}/general"
-            headers = {"X-OTX-API-KEY": api_key}
-            response = requests.get(url, headers=headers)
-            rate_limit_request()
-            return self._handle_response(response)
-        return {"error": "API key not found or not enabled"}
+        sections = ["general", "malware", "url_list"]
+        return self._aggregate_sections("domain", domain, sections)
+
+    def query_url(self, url):
+        sections = ["general", "url_list"]
+        return self._aggregate_sections("url", url, sections)
+
+    def query_file(self, file_hash):
+        sections = ["general", "analysis"]
+        return self._aggregate_sections("file", file_hash, sections)
+
+    def _aggregate_sections(self, indicator_type, indicator, sections):
+        aggregated = {"indicator": indicator, "type": indicator_type, "sections": {}}
+        for section in sections:
+            result = self._query_section(indicator_type, indicator, section)
+            aggregated["sections"][section] = result
+        return aggregated
 
     def query(self, indicator):
         indicator_type = self.determine_indicator_type(indicator)
@@ -205,10 +216,10 @@ class AlienVaultQuery:
             return "file"
         elif indicator.startswith("http://") or indicator.startswith("https://"):
             return "url"
+        elif indicator.count(".") == 3:  # Check for IP first
+            return "ip"
         elif "." in indicator:
             return "domain"
-        elif indicator.count(".") == 3:  # Basic check for an IP address
-            return "ip"
         else:
             return "unknown"
 
@@ -218,62 +229,50 @@ class AlienVaultQuery:
         else:
             return {"error": f"Failed to fetch data (status code: {response.status_code})"}
 
+
 class IBMXForceQuery:
     def __init__(self, user, module_name="IBM X-Force"):
         self.api_key = get_api_key(user, module_name)
+        self.api_secret = get_api_secret(user, module_name)
         self.base_url = "https://api.xforce.ibmcloud.com"
 
+    def _get_auth_headers(self):
+        if not self.api_key or not self.api_secret:
+            return None
+        token = f"{self.api_key}:{self.api_secret}"
+        token_bytes = token.encode("utf-8")
+        base64_token = base64.b64encode(token_bytes).decode("utf-8")
+        headers = {
+            "Authorization": f"Basic {base64_token}",
+            "Accept": "application/json"
+        }
+        return headers
+
+    def _make_request(self, endpoint):
+        headers = self._get_auth_headers()
+        if not headers:
+            return {"error": "IBM X-Force API credentials not available."}
+
+        url = f"{self.base_url}/{endpoint}"
+
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            return self._handle_response(response)
+        except requests.RequestException as e:
+            return {"error": f"Request failed: {str(e)}"}
+
+
     def query_file(self, file_hash):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/filereputation/{file_hash}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
+        return self._make_request(f"malware/{file_hash}")
 
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from IBM X-Force"}
-
-    def query_url(self, url):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/url/{url}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from IBM X-Force"}
+    def query_url(self, url_to_check):
+        return self._make_request(f"url/{url_to_check}")
 
     def query_ip(self, ip_address):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/ipr/{ip_address}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from IBM X-Force"}
+        return self._make_request(f"ipr/{ip_address}")
 
     def query_domain(self, domain):
-        if not self.api_key:
-            return {"error": "API key not available"}
-        
-        url = f"{self.base_url}/dns/{domain}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from IBM X-Force"}
+        return self._make_request(f"dns/{domain}")
 
     def query(self, indicator):
         indicator_type = self.determine_indicator_type(indicator)
@@ -289,16 +288,29 @@ class IBMXForceQuery:
             return {"error": "Unsupported indicator type"}
 
     def determine_indicator_type(self, indicator):
-        if len(indicator) == 32 or len(indicator) == 40 or len(indicator) == 64:
-            return "file"
-        elif indicator.startswith("http://") or indicator.startswith("https://"):
+        if indicator.startswith("http://") or indicator.startswith("https://"):
             return "url"
+        elif indicator.count(".") == 3 and all(part.isdigit() for part in indicator.split(".")):
+            return "ip"
+        elif len(indicator) in [32, 40, 64]:
+            return "file"
         elif "." in indicator:
             return "domain"
-        elif indicator.count(".") == 3:
-            return "ip"
         else:
             return "unknown"
+
+    def _handle_response(self, response):
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 401:
+            return {"error": "Unauthorized."}
+        else:
+            return {
+                "error": "Failed to fetch data from IBM X-Force",
+                "status_code": response.status_code,
+                "response_text": response.text
+            }
+
 
 class ShodanQuery:
     def __init__(self, user, module_name="Shodan"):
@@ -332,7 +344,7 @@ class ShodanQuery:
 
 class APIVoidQuery:
     def __init__(self, user):
-        self.base_url = "https://endpoint.apivoid.com"
+        self.base_url = "https://api.apivoid.com/v2"
         self.user = user
         self.module_name = "APIVoid"
 
@@ -342,33 +354,41 @@ class APIVoidQuery:
     def query_ip(self, ip_address):
         api_key = self._get_api_key()
         if api_key:
-            url = f"{self.base_url}/iprep/{ip_address}"
-            params = {"key": api_key}
-            return api_call_with_cache(url, params, f"apivoid_ip_{ip_address}")
+            url = f"{self.base_url}/ip-reputation"
+            headers = {"X-API-Key": api_key}
+            payload = {"ip": ip_address}
+            response = requests.post(url, json=payload, headers=headers)
+            return response.json()
         return {"error": "API key not found or not enabled"}
 
     def query_url(self, url):
         api_key = self._get_api_key()
         if api_key:
-            url = f"{self.base_url}/urlrep/{url}"
-            params = {"key": api_key}
-            return api_call_with_cache(url, params, f"apivoid_url_{url}")
+            url = f"{self.base_url}/url-reputation"
+            headers = {"X-API-Key": api_key}
+            payload = {"url": url}
+            response = requests.post(url, json=payload, headers=headers)
+            return response.json()
         return {"error": "API key not found or not enabled"}
 
     def query_domain(self, domain):
         api_key = self._get_api_key()
         if api_key:
-            url = f"{self.base_url}/domainrep/{domain}"
-            params = {"key": api_key}
-            return api_call_with_cache(url, params, f"apivoid_domain_{domain}")
+            url = f"{self.base_url}/domain-reputation"
+            headers = {"X-API-Key": api_key}
+            payload = {"domain": domain}
+            response = requests.post(url, json=payload, headers=headers)
+            return response.json()
         return {"error": "API key not found or not enabled"}
 
     def query_file(self, file_hash):
         api_key = self._get_api_key()
         if api_key:
-            url = f"{self.base_url}/filerep/{file_hash}"
-            params = {"key": api_key}
-            return api_call_with_cache(url, params, f"apivoid_file_{file_hash}")
+            url = f"{self.base_url}/file-reputation"
+            headers = {"X-API-Key": api_key}
+            payload = {"file": file_hash}
+            response = requests.post(url, json=payload, headers=headers)
+            return response.json()
         return {"error": "API key not found or not enabled"}
 
     def query(self, indicator):
@@ -429,32 +449,28 @@ class ThreatFoxQuery:
     def _handle_response(self, response):
         if response.status_code == 200:
             try:
-                # Try to parse the JSON response
                 response_json = response.json()
 
-                # Debugging: Log the full response structure to inspect it
-                print("Full Response JSON:", response_json)
-
-                # Handle the case where no results are found
                 if response_json.get("query_status") == "no_result":
                     return {"error": "No results found for the given indicator"}
 
-                # If response contains 'indicator', return it, otherwise log error
-                if isinstance(response_json, dict):
-                    if "indicator" in response_json:
+                # Correct check: look for "data", not "indicator"
+                if isinstance(response_json, dict) and "data" in response_json:
+                    data = response_json.get("data", [])
+                    if isinstance(data, list) and data:  # data is a non-empty list
                         return response_json
                     else:
-                        return {"error": "Expected 'indicator' field not found in response"}
+                        return {"error": "No data returned for this indicator"}
                 else:
-                    return {"error": "Unexpected response format: JSON was not a dictionary"}
+                    return {"error": "Unexpected response format: missing 'data' field"}
             except ValueError:
                 return {"error": "Failed to parse JSON, invalid response format"}
         else:
-            # Log status code and response text for debugging
             return {
                 "error": f"Failed to fetch data (status code: {response.status_code})",
                 "response": response.text
             }
+
 
 class MalwareBazaarQuery:
     def __init__(self, user):
@@ -506,56 +522,40 @@ class MalwareBazaarQuery:
                 "error": f"Failed to fetch data (status code: {response.status_code})",
                 "response": response.text
             }
-
 class URLHausQuery:
-    def __init__(self, user):
-        self.base_url = "https://urlhaus-api.abuse.ch/v1/"
-        self.user = user
-        self.module_name = "URLHaus"
+    def __init__(self, user=None, module_name="URLHausOffline"):
+        self.module_name = module_name
+        self.feed_path = FEED_PATHS.get("urlhaus", "search/feeds/urlhaus_full.json")
 
-    def _get_api_key(self):
-        return get_api_key(self.user, self.module_name)
+    def query(self, indicator: str) -> list:
+        if not os.path.exists(self.feed_path):
+            return [{"error": "URLHaus feed file not found"}]
 
-    def query(self, indicator):
-        api_key = self._get_api_key()
-        if not api_key:
-            return {"error": "API key not found or not enabled"}
+        matches = []
 
-        payload = {
-            "url": indicator
-        }
-
-        headers = {
-            "API-KEY": api_key
-        }
+        # Check if the indicator is a URL or a domain
+        is_url = indicator.startswith("http://") or indicator.startswith("https://")
 
         try:
-            response = requests.post(self.base_url + "url/", json=payload, headers=headers)
-            rate_limit_request()
-            return self._handle_response(response)
-        except requests.RequestException as e:
-            return {"error": f"Request error: {str(e)}"}
+            with open(self.feed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    def _handle_response(self, response):
-        if response.status_code == 200:
-            try:
-                response_json = response.json()
-                print("Full Response JSON:", response_json)
+                for entry_id, entries in data.items():
+                    for item in entries:
+                        item_url = item.get("url", "")
+                        parsed = urlparse(item_url)
+                        domain = parsed.netloc
 
-                if response_json.get("query_status") == "no_results":
-                    return {"error": "No results found for the given URL"}
+                        if is_url and indicator == item_url:
+                            matches.append(item)
+                        elif not is_url and indicator == domain:
+                            matches.append(item)
 
-                if "url" in response_json:
-                    return response_json
-                else:
-                    return {"error": "Expected 'url' field not found in response"}
-            except ValueError:
-                return {"error": "Failed to parse JSON, invalid response format"}
-        else:
-            return {
-                "error": f"Failed to fetch data (status code: {response.status_code})",
-                "response": response.text
-            }
+        except Exception as e:
+            return [{"error": f"Error reading URLHaus feed: {str(e)}"}]
+
+        return matches
+
 
 class AbuseIPDBQuery:
     def __init__(self, user, module_name="AbuseIPDB"):
@@ -614,19 +614,29 @@ class GreyNoiseQuery:
 
     def query_ip(self, ip_address):
         if not self.api_key:
+            print("❌ Missing API key")
             return {"error": "API key not available"}
-        
+
         url = f"{self.base_url}{ip_address}"
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        response = requests.get(url, headers=headers)
+        try:
+            response = requests.get(url, headers=headers)
+            print(f"➡️ Request URL: {url}")
+            print(f"➡️ Headers: {headers}")
+            print(f"⬅️ Status Code: {response.status_code}")
+            print(f"⬅️ Response Body: {response.text}")
 
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": "Failed to fetch data from GreyNoise"}
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"error": f"Failed to fetch data from GreyNoise: {response.status_code}"}
+
+        except requests.RequestException as e:
+            print(f"❌ Request Exception: {e}")
+            return {"error": f"Exception occurred: {str(e)}"}
 
     def query(self, indicator):
         indicator_type = self.determine_indicator_type(indicator)
@@ -793,14 +803,82 @@ class OpenPhishQuery:
         return [standardize_openphish_score(match, indicator) for match in matches]
 
 class CINSscoreQuery:
-    def search(self, indicator: str) -> list:
+    def __init__(self, user=None, module_name="CINSscore"):
+        self.module_name = module_name
+        self.feed_path = FEED_PATHS.get("cins", "../../feeds/ci-badguys.txt")  # Default fallback path
+
+    def query_ip(self, ip_address: str) -> list:
         matches = []
+
+        if not os.path.exists(self.feed_path):
+            return [{"error": "CINS feed file not found"}]
+
         try:
-            with open(FEED_PATHS["cins"], "r", encoding="utf-8") as f:
+            with open(self.feed_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    if indicator in line:
+                    line_ip = line.strip().split()[0]  # In case the line includes IP + metadata
+                    if ip_address == line_ip:
                         matches.append(line.strip())
         except Exception as e:
             return [{"error": f"Error reading CINS feed: {str(e)}"}]
-        
-        return [standardize_cins_score(match, indicator) for match in matches]
+
+        if not matches:
+            return []
+
+        return matches
+
+    def query(self, indicator: str) -> list:
+        indicator_type = self.determine_indicator_type(indicator)
+        if indicator_type == "ip":
+            return self.query_ip(indicator)
+        else:
+            return [{"error": "CINSscore only supports IP address queries"}]
+
+    def determine_indicator_type(self, indicator):
+        if indicator.count(".") == 3:  # Basic IPv4 check
+            return "ip"
+        return "unknown"
+
+
+class IPWhoisQuery:
+    def __init__(self, user=None, module_name="IPWhois"):
+        self.base_url = "https://ipwho.is/"
+        # No API key required
+
+    def query_ip(self, ip_address):
+        if not self.is_valid_ip(ip_address):
+            return {"error": "Invalid IP address format"}
+
+        url = f"{self.base_url}{ip_address}"
+        try:
+            response = requests.get(url)
+            print(f"➡️ Request URL: {url}")
+            print(f"⬅️ Status Code: {response.status_code}")
+            print(f"⬅️ Response Body: {response.text}")
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success"):
+                    return data
+                else:
+                    return {"error": data.get("message", "Unknown error")}
+            else:
+                return {"error": f"Failed to fetch data from ipwho.is: {response.status_code}"}
+
+        except requests.RequestException as e:
+            print(f"❌ Request Exception: {e}")
+            return {"error": f"Exception occurred: {str(e)}"}
+
+    def query(self, indicator):
+        indicator_type = self.determine_indicator_type(indicator)
+        if indicator_type == "ip":
+            return self.query_ip(indicator)
+        else:
+            return {"error": "ipwho.is only supports IP queries"}
+
+    def determine_indicator_type(self, indicator):
+        return "ip" if self.is_valid_ip(indicator) else "unknown"
+
+    def is_valid_ip(self, ip):
+        pattern = r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
+        return re.match(pattern, ip) is not None

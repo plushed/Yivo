@@ -9,25 +9,23 @@ export const useAuth = () => {
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [accessToken, setAccessToken] = useState(localStorage.getItem("access_token"));
+  const [refreshToken, setRefreshToken] = useState(localStorage.getItem("refresh_token"));
+  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("access_token"));
   const [loading, setLoading] = useState(true);
 
-  const getAccessToken = () => {
-    return localStorage.getItem("access_token");
-  };
-
-  const getRefreshToken = () => {
-    return localStorage.getItem("refresh_token");
-  };
-
   const refreshAccessToken = useCallback(async () => {
-    const refreshToken = getRefreshToken();
     if (refreshToken) {
       try {
-        const response = await axiosInstance.post("https://fluffy-waffle-4xvwj5g4xvc5jwr-8000.app.github.dev/api/token/refresh/", { refresh: refreshToken });
+        const response = await axiosInstance.post(
+          "https://fluffy-waffle-4xvwj5g4xvc5jwr-8000.app.github.dev/api/token/refresh/",
+          { refresh: refreshToken }
+        );
         const { access, refresh } = response.data;
         localStorage.setItem("access_token", access);
         localStorage.setItem("refresh_token", refresh);
+        setAccessToken(access);
+        setRefreshToken(refresh);
         return access;
       } catch (error) {
         console.error("Failed to refresh token:", error);
@@ -35,30 +33,31 @@ export const AuthProvider = ({ children }) => {
       }
     }
     return null;
-  }, []);
+  }, [refreshToken]);
 
   useEffect(() => {
     const fetchUser = async () => {
-      let token = getAccessToken();
-      if (token) {
+      if (accessToken) {
         try {
-          const response = await axiosInstance.get("https://fluffy-waffle-4xvwj5g4xvc5jwr-8000.app.github.dev/api/accounts/user/", {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const response = await axiosInstance.get(
+            "https://fluffy-waffle-4xvwj5g4xvc5jwr-8000.app.github.dev/api/accounts/user/",
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            }
+          );
           setUser(response.data);
           setIsAuthenticated(true);
         } catch (error) {
           if (error.response?.status === 401) {
-            token = await refreshAccessToken();
-            if (token) {
-              fetchUser();
+            const newToken = await refreshAccessToken();
+            if (newToken) {
+              setAccessToken(newToken);
+              fetchUser(); // retry after refresh
             } else {
-              localStorage.clear();
-              setIsAuthenticated(false);
+              logout();
             }
           } else {
-            localStorage.clear();
-            setIsAuthenticated(false);
+            logout();
           }
         }
       } else {
@@ -68,16 +67,16 @@ export const AuthProvider = ({ children }) => {
     };
 
     fetchUser();
-  }, [refreshAccessToken]);
+  }, [accessToken, refreshAccessToken]);
 
   const login = async (email, password) => {
     const response = await axiosInstance.post(
       "https://fluffy-waffle-4xvwj5g4xvc5jwr-8000.app.github.dev/api/accounts/login/",
       { email, password }
     );
-  
+
     const { access, refresh } = response.data;
-  
+
     // Decode token to extract user info
     let tokenPayload = {};
     try {
@@ -87,29 +86,43 @@ export const AuthProvider = ({ children }) => {
     } catch (e) {
       console.warn("Unable to decode token payload");
     }
-  
+
     const user = {
       username: tokenPayload.username || "user",
       email: tokenPayload.email || email,
     };
-  
+
     setUser(user);
+    setAccessToken(access);
+    setRefreshToken(refresh);
+    setIsAuthenticated(true);
+
     localStorage.setItem("user", JSON.stringify(user));
     localStorage.setItem("access_token", access);
     localStorage.setItem("refresh_token", refresh);
   };
-   
 
   const logout = () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
+    localStorage.clear();
     setUser(null);
+    setAccessToken(null);
+    setRefreshToken(null);
     setIsAuthenticated(false);
   };
 
   return (
-    <AuthContext.Provider value={{ user, setUser, login, logout, isAuthenticated, loading }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        accessToken,
+        refreshToken,
+        setUser,
+        login,
+        logout,
+        isAuthenticated,
+        loading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
